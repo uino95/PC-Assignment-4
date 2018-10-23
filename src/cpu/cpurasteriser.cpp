@@ -195,11 +195,7 @@ std::vector<unsigned char> rasteriseCPU(std::string inputFile, unsigned int widt
     std::cout << "Loading '" << inputFile << "' file... " << std::endl;
 
 	std::vector<Mesh> meshes = loadWavefront(inputFile, false);
-  int numberOfThreads = std::thread::hardware_concurrency();
-  std::vector<std::vector<Mesh>> threadMeshes;
-  for (int i = 0; i < numberOfThreads; i++) {
-    threadMeshes.push_back(meshes);
-  }
+
 
 	// We first need to allocate some buffers.
 	// The framebuffer contains the image being rendered.
@@ -231,7 +227,7 @@ std::vector<unsigned char> rasteriseCPU(std::string inputFile, unsigned int widt
 			boundingBoxMax.z = std::max(boundingBoxMax.z, meshes.at(i).vertices.at(vertex).z);
 		}
 	}
-
+  int numberOfThreads = std::thread::hardware_concurrency();
   std::vector<std::vector<Mesh>> threadTransformedMeshes;
   for (int i = 0; i < numberOfThreads; i++) {
     threadTransformedMeshes.push_back(transformedMeshes);
@@ -254,35 +250,28 @@ std::vector<unsigned char> rasteriseCPU(std::string inputFile, unsigned int widt
 
 	fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit);
 
-    float scale = 0;
-    float3 offset = float3(0,0,0);
     std::mutex myMutex;
     // here we have to measure how long does it take to render
     auto start = std::chrono::high_resolution_clock::now();
     int numberOfThread = 0;
     int omp_get_thread_num();
-    #pragma omp parallel for
+    #pragma omp parallel for schedule(guided)
     for(unsigned int item = 0; item < totalItemsToRender; item++) {
-
         // if(item % 10000 == 0) {
         //     std::cout << item << "/" << totalItemsToRender << " complete." << std::endl;
         // }
-
         workItemCPU objectToRender = workQueue.at(item);
         for (unsigned int i = 0; i < meshes.size(); i++) {
             // The problem here is that threads are working on the same vector of mesh.
             myMutex.lock();
             numberOfThread = omp_get_thread_num();
-            Mesh &mesh = threadMeshes.at(numberOfThread).at(i);
+            Mesh &mesh = meshes.at(i);
             Mesh &transformedMesh = threadTransformedMeshes.at(numberOfThread).at(i);
             myMutex.unlock();
 
             runVertexShader(mesh, transformedMesh, objectToRender.distanceOffset, objectToRender.scale, width, height);
             rasteriseTriangles(transformedMesh, frameBuffer, depthBuffer, width, height);
-
-
         }
-
     }
     auto end = std::chrono::high_resolution_clock::now();
   	auto timeTaken = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
