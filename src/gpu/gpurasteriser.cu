@@ -9,6 +9,7 @@
 #include "cuda_runtime.h"
 #include "utilities/cuda_error_helper.hpp"
 #include "utilities/geometry.hpp"
+#include <stdio.h>
 
 struct workItemGPU {
     float scale;
@@ -106,7 +107,7 @@ void runFragmentShader( unsigned char* frameBuffer,
     float3 colour = make_float3(0.0f, 0.0f, 0.0f);
 
 	for (globalLight const &l : lightSources) {
-		float lightNormalDotProduct = 
+		float lightNormalDotProduct =
 			normal.x * l.direction.x + normal.y * l.direction.y + normal.z * l.direction.z;
 
 		float3 diffuseReflectionColour;
@@ -213,7 +214,6 @@ void renderMeshes(
 }
 
 
-
 void fillWorkQueue(
         workItemGPU* workQueue,
         float largestBoundingBoxSide,
@@ -257,15 +257,45 @@ void fillWorkQueue(
 
 }
 
+__global__
+void initializeDepthBuffer(int size, float *depthBuffer)
+{
+  int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if (i < size) {depthBuffer[i] = 1; }
+}
+
+__global__
+void initializeFrameBuffer(int size, unsigned char *frameBuffer)
+{
+  int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if (i < size && (i % 4) < 3) {
+    frameBuffer[i] = 0;
+  } else if (i<size){
+    frameBuffer[i] = 255;
+  }
+}
+
 // This function kicks off the rasterisation process.
 std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int width, unsigned int height, unsigned int depthLimit) {
     std::cout << "Rendering an image on the GPU.." << std::endl;
+
+    int count=0;
+    int deviceID = 0;
+    cudaDeviceProp devProp;
+
+    checkCudaErrors(cudaGetDeviceCount(&count));
+    std::cout << "Number of devices detected: " << count << std::endl;
+    checkCudaErrors(cudaGetDeviceProperties (&devProp, deviceID));
+    std::cout << "Name of device " << deviceID << " is: " << devProp.name << std::endl;
+    checkCudaErrors(cudaSetDevice(deviceID));
+
     std::cout << "Loading '" << inputFile << "' file... " << std::endl;
 
     std::vector<GPUMesh> meshes = loadWavefrontGPU(inputFile, false);
 
     // We first need to allocate some buffers.
     // The framebuffer contains the image being rendered.
+
     unsigned char* frameBuffer = new unsigned char[width * height * 4];
     // The depth buffer is used to make sure that objects closer to the camera occlude/obscure objects that are behind it
     for (unsigned int i = 0; i < (4 * width * height); i+=4) {
@@ -279,6 +309,30 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 	for(unsigned int i = 0; i < width * height; i++) {
     	depthBuffer[i] = 1;
     }
+
+    float* deviceDepthBuffer;
+    unsigned char* deviceFrameBuffer;
+
+    int resolution = width*height;
+
+    checkCudaErrors(cudaMalloc(&deviceDepthBuffer, resolution * sizeof(float)));
+    checkCudaErrors(cudaMalloc(&deviceFrameBuffer, resolution * 4 * sizeof(unsigned char)));
+
+    // take care of integer division down there
+    initializeDepthBuffer<<<((resolution + devProp.maxThreadsPerBlock))/devProp.maxThreadsPerBlock, devProp.maxThreadsPerBlock>>>(resolution, deviceDepthBuffer);
+    initializeFrameBuffer<<<((resolution * 4 + devProp.maxThreadsPerBlock))/devProp.maxThreadsPerBlock, devProp.maxThreadsPerBlock>>>(resolution*4, deviceFrameBuffer);
+
+    checkCudaErrors(cudaDeviceSynchronize());
+
+// code to check if i've allocated all the staff in the correct way
+	float* depthBuffer1 = new float[width * height ];
+
+    checkCudaErrors(cudaMemcpy(depthBuffer1, deviceDepthBuffer, resolution*sizeof(float), cudaMemcpyDeviceToHost));
+
+    for(unsigned int i = 0; i < width * height ; i++) {
+        std::cout << "DB after at  " << i << " = " << depthBuffer1[i]<< std::endl;
+      }
+    //
 
     float3 boundingBoxMin = make_float3(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
     float3 boundingBoxMax = make_float3(std::numeric_limits<float>::min(), std::numeric_limits<float>::min(), std::numeric_limits<float>::min());
@@ -314,11 +368,16 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     }
 
     workItemGPU* workQueue = new workItemGPU[totalItemsToRender];
+    workItemGPU* deviceWorkQueue;
+
+    checkCudaErrors(cudaMalloc(&deviceWorkQueue, totalItemsToRender*sizeof(workItemGPU)));
 
     std::cout << "Number of items to be rendered: " << totalItemsToRender << std::endl;
 
     unsigned long counter = 0;
     fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit, &counter);
+
+    checkCudaErrors(cudaMemcpy(deviceWorkQueue, workQueue, totalItemsToRender*sizeof(workItemGPU), cudaMemcpyHostToDevice));
 
 	renderMeshes(
 			totalItemsToRender, workQueue,
