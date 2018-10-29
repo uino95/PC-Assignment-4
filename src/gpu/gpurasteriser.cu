@@ -163,6 +163,13 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 	maxy = std::min(maxy, height);
 
 	// We iterate over each pixel in the triangle's bounding box
+
+  if(maxx - minx > 10000) {
+    std::cout << "x " << (maxx - minx) << std::endl;
+  }
+  if(maxy - miny > 10000) {
+  std::cout << "y " << (maxy - miny) << std::endl;
+  }
 	for (unsigned int x = minx; x < maxx; x++) {
 		for (unsigned int y = miny; y < maxy; y++) {
 			float u, v, w;
@@ -183,7 +190,7 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 	}
 }
 
-
+__global__
 void renderMeshes(
         unsigned long totalItemsToRender,
         workItemGPU* workQueue,
@@ -194,10 +201,43 @@ void renderMeshes(
         unsigned char* frameBuffer,
         float* depthBuffer
 ) {
+    int item = gridDim.x * blockIdx.x + gridDim.y * blockIdx.y + gridDim.z * blockIdx.z;
+    std::cout << "Items " << totalItemsToRender << "index " << item << std::endl;
+    workItemGPU objectToRender = workQueue[item];
 
+    std::cout << "meshCount " << meshCount << std::endl;
+    for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
+        std::cout << "triangleCounts " << meshes[meshIndex].vertexCount / 3 << std::endl;
+        for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
+            float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
+            float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
+            float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
+
+            runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
+            runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
+            runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
+
+            rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
+        }
+    }
+}
+
+void renderMeshesNeverTouch(
+        unsigned long totalItemsToRender,
+        workItemGPU* workQueue,
+        GPUMesh* meshes,
+        unsigned int meshCount,
+        unsigned int width,
+        unsigned int height,
+        unsigned char* frameBuffer,
+        float* depthBuffer
+) {
+    std::cout << "Items " << totalItemsToRender << std::endl;
     for(unsigned int item = 0; item < totalItemsToRender; item++) {
         workItemGPU objectToRender = workQueue[item];
+        std::cout << "meshCount " << meshCount << std::endl;
         for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
+            std::cout << "triangleCounts " << meshes[meshIndex].vertexCount / 3 << std::endl;
             for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
                 float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
                 float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
@@ -293,6 +333,26 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
     std::vector<GPUMesh> meshes = loadWavefrontGPU(inputFile, false);
 
+    GPUMesh *hostBuffer = new GPUMesh[meshes.size()];
+    GPUMesh *deviceBuffer = new GPUMesh[meshes.size()];
+
+    for(unsigned int i=0;i<meshes.size(); i++) {
+      float4* vertices;
+      float3* normals;
+      checkCudaErrors(cudaMalloc(&vertices, meshes.at(i).vertexCount * sizeof(float4)));
+      checkCudaErrors(cudaMalloc(&normals, meshes.at(i).vertexCount * sizeof(float3)));
+
+      checkCudaErrors(cudaMemcpy(vertices, meshes.at(i).vertices, meshes.at(i).vertexCount * sizeof(float4), cudaMemcpyHostToDevice));
+      checkCudaErrors(cudaMemcpy(normals, meshes.at(i).normals, meshes.at(i).vertexCount * sizeof(float3), cudaMemcpyHostToDevice));
+
+      hostBuffer[i].vertices = vertices;
+      hostBuffer[i].normals = normals;
+      hostBuffer[i].vertexCount = meshes.at(i).vertexCount;
+      hostBuffer[i].objectDiffuseColour = meshes.at(i).objectDiffuseColour;
+      hostBuffer[i].hasNormals = meshes.at(i).hasNormals;
+    }
+
+    //checkCudaErrors(cudaMemcpy(deviceBuffer, hostBuffer, meshes.size() * sizeof(GPUMesh), cudaMemcpyHostToDevice));
     // We first need to allocate some buffers.
     // The framebuffer contains the image being rendered.
 
@@ -330,7 +390,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     checkCudaErrors(cudaMemcpy(depthBuffer1, deviceDepthBuffer, resolution*sizeof(float), cudaMemcpyDeviceToHost));
 
     for(unsigned int i = 0; i < width * height ; i++) {
-        std::cout << "DB after at  " << i << " = " << depthBuffer1[i]<< std::endl;
+        //std::cout << "DB after at  " << i << " = " << depthBuffer1[i]<< std::endl;
       }
     //
 
@@ -379,11 +439,29 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
     checkCudaErrors(cudaMemcpy(deviceWorkQueue, workQueue, totalItemsToRender*sizeof(workItemGPU), cudaMemcpyHostToDevice));
 
+/*
 	renderMeshes(
 			totalItemsToRender, workQueue,
 			meshes.data(), meshes.size(),
-			width, height, frameBuffer, depthBuffer);
+			width, height, frameBuffer, depthBuffer, devProp);
+*/
 
+
+    int numberOfGrids = std::min(devProp.maxGridSize[0], totalItemsToRender);
+    int numberOfDimensions = 1;
+    if(devProp.maxGridSize[0] < totalItemsToRender) {
+      numberOfDimensions = totalItemsToRender / devProp.maxGridSize[0];
+    }
+
+    //TODO capire se overhead e troppo
+    dim3 grid(devProp.maxGridSize[0], devProp.maxGridSize[1], devProp.maxGridSize[2]);
+    dim3 block(devProp.maxThreadsDim[0], devProp.maxThreadsDim[1], devProp.maxThreadsDim[2]);
+
+    renderMeshes<<<grid, block>>>(
+      totalItemsToRender, workQueue,
+			meshes.data(), meshes.size(),
+			width, height, frameBuffer, depthBuffer
+    );
 
     std::cout << "Finished!" << std::endl;
 
