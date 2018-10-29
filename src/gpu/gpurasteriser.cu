@@ -272,7 +272,7 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 	}
 }
 
-
+__global__
 void renderMeshes(
         unsigned long totalItemsToRender,
         workItemGPU* workQueue,
@@ -284,14 +284,14 @@ void renderMeshes(
         int* depthBuffer
 ) {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
-    printf("index %d \n X: blockDim.x %d blockIdx.x %d threadIdx.x %d \n Y: blockDim.y %d blockIdx.y %d threadIdx.y %d \n Z: blockDim.z %d blockIdx.z %d threadIdx.z %d \n", index, blockDim.x, blockIdx.x, threadIdx.x, blockDim.y, blockIdx.y, threadIdx.y, blockDim.z, blockIdx.z, threadIdx.z);
+    //printf("index %d \n X: blockDim.x %d blockIdx.x %d threadIdx.x %d \n Y: blockDim.y %d blockIdx.y %d threadIdx.y %d \n Z: blockDim.z %d blockIdx.z %d threadIdx.z %d \n", index, blockDim.x, blockIdx.x, threadIdx.x, blockDim.y, blockIdx.y, threadIdx.y, blockDim.z, blockIdx.z, threadIdx.z);
 		if(index < totalItemsToRender) {
 	    workItemGPU objectToRender = workQueue[index];
-			printf("A %d", index);
+
 	    for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
-			printf("B %d ",  meshCount);	//TODO meshIndex: e questo l'errore
+		//TODO meshIndex: e questo l'errore
 	        for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
-					printf("C %d\n",  meshes[meshIndex].vertexCount / 3);
+
 	            float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
 	            float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
 	            float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
@@ -305,11 +305,6 @@ void renderMeshes(
 	    }
 		}
 }
-
-
-
-
-
 
 void fillWorkQueue(
         workItemGPU* workQueue,
@@ -376,32 +371,46 @@ void initializeFrameBuffer(int size, unsigned char *frameBuffer)
 std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int width, unsigned int height, unsigned int depthLimit) {
     std::cout << "Rendering an image on the GPU.." << std::endl;
     std::cout << "Loading '" << inputFile << "' file... " << std::endl;
-		int count = 0;
-		checkCudaErrors(cudaGetDeviceCount(&count));
-		cout << "Count " << count << endl;
-		cudaDeviceProp* prop;
-		checkCudaErrors(cudaGetDeviceProperties(prop, 0));
-		cout << "Device " << prop->name << endl;
+
+		int count=0;
+    int deviceID = 0;
+    cudaDeviceProp devProp;
+
+    checkCudaErrors(cudaGetDeviceCount(&count));
+    std::cout << "Number of devices detected: " << count << std::endl;
+    checkCudaErrors(cudaGetDeviceProperties (&devProp, deviceID));
+    std::cout << "Name of device " << deviceID << " is: " << devProp.name << std::endl;
+    checkCudaErrors(cudaSetDevice(deviceID));
 
     std::vector<GPUMesh> meshes = loadWavefrontGPU(inputFile, false);
 
-    // We first need to allocate some buffers.
-    // The framebuffer contains the image being rendered.
-    unsigned char* frameBuffer = new unsigned char[width * height * 4];
-    // The depth buffer is used to make sure that objects closer to the camera occlude/obscure objects that are behind it
-    for (unsigned int i = 0; i < (4 * width * height); i+=4) {
-			frameBuffer[i + 0] = 0;
-			frameBuffer[i + 1] = 0;
-			frameBuffer[i + 2] = 0;
-			frameBuffer[i + 3] = 255;
-		}
+    GPUMesh *hostBuffer = new GPUMesh[meshes.size()];
+    GPUMesh *deviceBuffer = new GPUMesh[meshes.size()];
 
-		int* depthBuffer = new int[width * height];
-		for(unsigned int i = 0; i < width * height; i++) {
-				depthBuffer[i] = 16777216; // = 2 ^ 24
-		}
+		checkCudaErrors(cudaMalloc(&deviceBuffer, meshes.size() * sizeof(GPUMesh)));
 
+    for(unsigned int i=0;i<meshes.size(); i++) {
+      float4* vertices;
+      float3* normals;
+      checkCudaErrors(cudaMalloc(&vertices, meshes.at(i).vertexCount * sizeof(float4)));
+      checkCudaErrors(cudaMalloc(&normals, meshes.at(i).vertexCount * sizeof(float3)));
+
+      checkCudaErrors(cudaMemcpy(vertices, meshes.at(i).vertices, meshes.at(i).vertexCount * sizeof(float4), cudaMemcpyHostToDevice));
+      checkCudaErrors(cudaMemcpy(normals, meshes.at(i).normals, meshes.at(i).vertexCount * sizeof(float3), cudaMemcpyHostToDevice));
+
+      hostBuffer[i].vertices = vertices;
+      hostBuffer[i].normals = normals;
+      hostBuffer[i].vertexCount = meshes.at(i).vertexCount;
+      hostBuffer[i].objectDiffuseColour = meshes.at(i).objectDiffuseColour;
+      hostBuffer[i].hasNormals = meshes.at(i).hasNormals;
+    }
+
+		checkCudaErrors(cudaMemcpy(deviceBuffer, hostBuffer, meshes.size() * sizeof(GPUMesh), cudaMemcpyHostToDevice));
+
+		// We first need to allocate some buffers.
+		// The depth buffer is used to make sure that objects closer to the camera occlude/obscure objects that are behind it
     int* deviceDepthBuffer;
+		// The framebuffer contains the image being rendered.
     unsigned char* deviceFrameBuffer;
 
     int resolution = width*height;
@@ -447,6 +456,8 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     }
 
     workItemGPU* workQueue = new workItemGPU[totalItemsToRender];
+		workItemGPU* deviceWorkQueue;
+		checkCudaErrors(cudaMalloc(&deviceWorkQueue, totalItemsToRender*sizeof(workItemGPU)));
 
     std::cout << "Number of items to be rendered: " << totalItemsToRender << std::endl;
 
@@ -455,15 +466,15 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
     checkCudaErrors(cudaMemcpy(deviceWorkQueue, workQueue, totalItemsToRender*sizeof(workItemGPU), cudaMemcpyHostToDevice));
 
-    int numberOfGrids = devProp.maxGridSize[0] < totalItemsToRender ? devProp.maxGridSize[0] : totalItemsToRender;
-    int numberOfDimensions = 1;
-    if(devProp.maxGridSize[0] < totalItemsToRender) {
-      numberOfDimensions = totalItemsToRender / devProp.maxGridSize[0];
-    }
+    // int numberOfGrids = devProp.maxGridSize[0] < totalItemsToRender ? devProp.maxGridSize[0] : totalItemsToRender;
+    // int numberOfDimensions = 1;
+    // if(devProp.maxGridSize[0] < totalItemsToRender) {
+    //   numberOfDimensions = totalItemsToRender / devProp.maxGridSize[0];
+    // }
 
 		printf("A %d\n", devProp.maxThreadsPerBlock);
-    dim3 numBlocks(2);
-    dim3 threadPerBlock(200);
+    dim3 numBlocks(totalItemsToRender + devProp.maxThreadsPerBlock / devProp.maxThreadsPerBlock);
+    dim3 threadPerBlock(devProp.maxThreadsPerBlock);
 
     //dim3 numBlocks(4, 4);
     //dim3 threadPerBlock(4, 4);
@@ -476,10 +487,13 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
 		checkCudaErrors(cudaDeviceSynchronize());
 
-    std::cout << "Finished!" << std::endl;
+    std::cout << "Finished! device frame buffer size " << std::endl;
+
+		unsigned char* frameBuffer = 	new unsigned char[resolution * 4];
+		checkCudaErrors(cudaMemcpy(frameBuffer, deviceFrameBuffer, resolution * 4 *sizeof(unsigned char), cudaMemcpyDeviceToHost));
 
     // Copy the output picture into a vector so that the image dump code is happy :)
-    std::vector<unsigned char> outputFramebuffer(deviceFrameBuffer, deviceFrameBuffer + (width * height * 4));
+    std::vector<unsigned char> outputFramebuffer(frameBuffer, frameBuffer + (width * height * 4));
 
     return outputFramebuffer;
 }
