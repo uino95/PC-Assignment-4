@@ -265,8 +265,8 @@ __host__ __device__ static const char *_cudaGetErrorEnum(cudaError_t error)
         case cudaErrorApiFailureBase:
             return "cudaErrorApiFailureBase";
 
-        /* Since CUDA 8.0*/        
-        case cudaErrorNvlinkUncorrectable :   
+        /* Since CUDA 8.0*/
+        case cudaErrorNvlinkUncorrectable :
             return "cudaErrorNvlinkUncorrectable";
 
 		/* Since CUDA 9.0 */
@@ -989,7 +989,7 @@ void check(T result, char const *const func, const char *const file, int const l
 		{
 			return;
 		}
-		
+
         // Make sure we call CUDA Device Reset before exiting
         exit(EXIT_FAILURE);
     }
@@ -1006,4 +1006,3 @@ __device__ void check_device(T result, char const *const func, const char *const
 
 #define checkCudaErrors(val)           check ( (val), #val, __FILE__, __LINE__ )
 #define checkDeviceCudaErrors(val)           check_device ( (val), #val, __FILE__, __LINE__ )
-

@@ -9,15 +9,6 @@
 #include "cuda_runtime.h"
 #include "utilities/cuda_error_helper.hpp"
 
-
-// UTILITY FUNCTIONS HAVE BEEN MOVED INTO THE KERNEL SOURCE FILE ITSELF
-// CUDA relocatable and separable compilation is possible, but due to the many possible
-// problems it can cause on different platforms, I decided to take the safe route instead
-// and make sure it would compile fine for everyone. That implies moving everything into
-// one file unfortunately.
-
-using namespace std;
-
 class globalLight {
 public:
 	float3 direction;
@@ -114,6 +105,7 @@ struct workItemGPU {
     workItemGPU() : scale(1), distanceOffset(make_float3(0, 0, 0)) {}
 };
 
+__device__
 void runVertexShader( float4 &vertex,
                       float3 positionOffset,
                       float scale,
@@ -177,7 +169,7 @@ void runVertexShader( float4 &vertex,
     vertex.y = (vertex.y + 0.5f) * (float) height;
 }
 
-
+__device__
 void runFragmentShader( unsigned char* frameBuffer,
 						unsigned int const baseIndex,
 						GPUMesh &mesh,
@@ -229,6 +221,7 @@ void runFragmentShader( unsigned char* frameBuffer,
  * @param width                   width of the image
  * @param height                  height of the image
  */
+ __device__
 void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
                         GPUMesh &mesh,
                         unsigned int triangleIndex,
@@ -290,24 +283,31 @@ void renderMeshes(
         unsigned char* frameBuffer,
         int* depthBuffer
 ) {
+    int index = blockDim.x * blockIdx.x + threadIdx.x;
+    printf("index %d \n X: blockDim.x %d blockIdx.x %d threadIdx.x %d \n Y: blockDim.y %d blockIdx.y %d threadIdx.y %d \n Z: blockDim.z %d blockIdx.z %d threadIdx.z %d \n", index, blockDim.x, blockIdx.x, threadIdx.x, blockDim.y, blockIdx.y, threadIdx.y, blockDim.z, blockIdx.z, threadIdx.z);
+		if(index < totalItemsToRender) {
+	    workItemGPU objectToRender = workQueue[index];
+			printf("A %d", index);
+	    for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
+			printf("B %d ",  meshCount);	//TODO meshIndex: e questo l'errore
+	        for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
+					printf("C %d\n",  meshes[meshIndex].vertexCount / 3);
+	            float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
+	            float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
+	            float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
 
-    for(unsigned int item = 0; item < totalItemsToRender; item++) {
-        workItemGPU objectToRender = workQueue[item];
-        for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
-            for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
-                float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
-                float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
-                float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
+	            runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
+	            runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
+	            runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
 
-                runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
-                runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
-                runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
-
-                rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
-            }
-        }
-    }
+	            rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
+	        }
+	    }
+		}
 }
+
+
+
 
 
 
@@ -354,6 +354,24 @@ void fillWorkQueue(
 
 }
 
+__global__
+void initializeDepthBuffer(int size, int *depthBuffer)
+{
+  int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if (i < size) {depthBuffer[i] = 16777216; }
+}
+
+__global__
+void initializeFrameBuffer(int size, unsigned char *frameBuffer)
+{
+  int i = blockIdx.x*blockDim.x + threadIdx.x;
+  if (i < size && (i % 4) < 3) {
+    frameBuffer[i] = 0;
+  } else if (i<size){
+    frameBuffer[i] = 255;
+  }
+}
+
 // This function kicks off the rasterisation process.
 std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int width, unsigned int height, unsigned int depthLimit) {
     std::cout << "Rendering an image on the GPU.." << std::endl;
@@ -372,16 +390,30 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     unsigned char* frameBuffer = new unsigned char[width * height * 4];
     // The depth buffer is used to make sure that objects closer to the camera occlude/obscure objects that are behind it
     for (unsigned int i = 0; i < (4 * width * height); i+=4) {
-		frameBuffer[i + 0] = 0;
-		frameBuffer[i + 1] = 0;
-		frameBuffer[i + 2] = 0;
-		frameBuffer[i + 3] = 255;
-	}
+			frameBuffer[i + 0] = 0;
+			frameBuffer[i + 1] = 0;
+			frameBuffer[i + 2] = 0;
+			frameBuffer[i + 3] = 255;
+		}
 
-	int* depthBuffer = new int[width * height];
-	for(unsigned int i = 0; i < width * height; i++) {
-    	depthBuffer[i] = 16777216; // = 2 ^ 24
-    }
+		int* depthBuffer = new int[width * height];
+		for(unsigned int i = 0; i < width * height; i++) {
+				depthBuffer[i] = 16777216; // = 2 ^ 24
+		}
+
+    int* deviceDepthBuffer;
+    unsigned char* deviceFrameBuffer;
+
+    int resolution = width*height;
+
+    checkCudaErrors(cudaMalloc(&deviceDepthBuffer, resolution * sizeof(int)));
+    checkCudaErrors(cudaMalloc(&deviceFrameBuffer, resolution * 4 * sizeof(unsigned char)));
+
+    // take care of integer division down there
+    initializeDepthBuffer<<<((resolution + devProp.maxThreadsPerBlock))/devProp.maxThreadsPerBlock, devProp.maxThreadsPerBlock>>>(resolution, deviceDepthBuffer);
+    initializeFrameBuffer<<<((resolution * 4 + devProp.maxThreadsPerBlock))/devProp.maxThreadsPerBlock, devProp.maxThreadsPerBlock>>>(resolution*4, deviceFrameBuffer);
+
+    checkCudaErrors(cudaDeviceSynchronize());
 
     float3 boundingBoxMin = make_float3(std::numeric_limits<float>::max(), std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
     float3 boundingBoxMax = make_float3(std::numeric_limits<float>::min(), std::numeric_limits<float>::min(), std::numeric_limits<float>::min());
@@ -421,15 +453,33 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     unsigned long counter = 0;
     fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit, &counter);
 
-	renderMeshes(
-			totalItemsToRender, workQueue,
-			meshes.data(), meshes.size(),
-			width, height, frameBuffer, depthBuffer);
+    checkCudaErrors(cudaMemcpy(deviceWorkQueue, workQueue, totalItemsToRender*sizeof(workItemGPU), cudaMemcpyHostToDevice));
+
+    int numberOfGrids = devProp.maxGridSize[0] < totalItemsToRender ? devProp.maxGridSize[0] : totalItemsToRender;
+    int numberOfDimensions = 1;
+    if(devProp.maxGridSize[0] < totalItemsToRender) {
+      numberOfDimensions = totalItemsToRender / devProp.maxGridSize[0];
+    }
+
+		printf("A %d\n", devProp.maxThreadsPerBlock);
+    dim3 numBlocks(2);
+    dim3 threadPerBlock(200);
+
+    //dim3 numBlocks(4, 4);
+    //dim3 threadPerBlock(4, 4);
+
+    renderMeshes<<<numBlocks, threadPerBlock>>>(
+      totalItemsToRender, deviceWorkQueue,
+			deviceBuffer, meshes.size(),
+			width, height, deviceFrameBuffer, deviceDepthBuffer
+    );
+
+		checkCudaErrors(cudaDeviceSynchronize());
 
     std::cout << "Finished!" << std::endl;
 
     // Copy the output picture into a vector so that the image dump code is happy :)
-    std::vector<unsigned char> outputFramebuffer(frameBuffer, frameBuffer + (width * height * 4));
+    std::vector<unsigned char> outputFramebuffer(deviceFrameBuffer, deviceFrameBuffer + (width * height * 4));
 
     return outputFramebuffer;
 }
