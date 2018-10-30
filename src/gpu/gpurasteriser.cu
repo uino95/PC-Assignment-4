@@ -273,6 +273,28 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 }
 
 __global__
+void createTriangles(
+		GPUMesh* meshes,
+		unsigned int meshIndex,
+		workItemGPU *objectToRender,
+		unsigned int width,
+		unsigned int height,
+		unsigned char* frameBuffer,
+		int* depthBuffer) {
+	int triangleIndex = blockDim.y * blockIdx.y + threadIdx.y;
+
+	float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
+	float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
+	float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
+
+	runVertexShader(v0, objectToRender->distanceOffset, objectToRender->scale, width, height);
+	runVertexShader(v1, objectToRender->distanceOffset, objectToRender->scale, width, height);
+	runVertexShader(v2, objectToRender->distanceOffset, objectToRender->scale, width, height);
+
+	rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
+}
+
+__global__
 void renderMeshes(
         unsigned long totalItemsToRender,
         workItemGPU* workQueue,
@@ -284,25 +306,27 @@ void renderMeshes(
         int* depthBuffer
 ) {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
+		int triangleIndex = blockDim.y * blockIdx.y + threadIdx.y;
+
+		//printf("%d %d \n", index, triangleIndex);
+		//printf("%d\n", triangleIndex);
+
     if(index < totalItemsToRender) {
 	    workItemGPU objectToRender = workQueue[index];
 
-	    for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
-	        for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
+			for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
+				if(triangleIndex * 3 <  meshes[meshIndex].vertexCount) {
+					float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
+					float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
+					float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
 
-	            float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
-	            float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
-	            float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
+					runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
+					runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
+					runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
 
-	            runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
-	            runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
-	            runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
-
-	            rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
-	        }
-	    }
-		} else {
-			//printf("A\n");
+					rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
+				}
+			}
 		}
 }
 
@@ -471,9 +495,17 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     // if(devProp.maxGridSize[0] < totalItemsToRender) {
     //   numberOfDimensions = totalItemsToRender / devProp.maxGridSize[0];
     // }
+		int max = meshes[0].vertexCount / 3;
+		for (unsigned int meshIndex = 1; meshIndex < meshes.size(); meshIndex++) {
+				if(3 * max > meshes[meshIndex].vertexCount) {
+					max = meshes[meshIndex].vertexCount / 3;
+				}
+		}
 
-    dim3 numBlocks(totalItemsToRender / devProp.maxThreadsPerBlock + 1);
-    dim3 threadPerBlock(devProp.maxThreadsPerBlock);
+		printf("%d", max);
+
+    dim3 numBlocks(totalItemsToRender / devProp.maxThreadsPerBlock + 1, 1);
+    dim3 threadPerBlock(devProp.maxThreadsPerBlock, 960);
 
     //dim3 numBlocks(4, 4);
     //dim3 threadPerBlock(4, 4);
