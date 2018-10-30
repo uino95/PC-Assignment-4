@@ -206,6 +206,12 @@ void runFragmentShader( unsigned char* frameBuffer,
     colour.y = fminf(fmaxf(colour.y, 0.0f), 1.0f);
     colour.z = fminf(fmaxf(colour.z, 0.0f), 1.0f);
 
+		/*
+		atomicExch(&frameBuffer[4 * baseIndex + 0], colour.x * 255.0f);
+		atomicExch(&frameBuffer[4 * baseIndex + 1], colour.y * 255.0f);
+		atomicExch(&frameBuffer[4 * baseIndex + 2], colour.z * 255.0f);
+		atomicExch(&frameBuffer[4 * baseIndex + 3], 255);
+		*/
     frameBuffer[4 * baseIndex + 0] = colour.x * 255.0f;
     frameBuffer[4 * baseIndex + 1] = colour.y * 255.0f;
     frameBuffer[4 * baseIndex + 2] = colour.z * 255.0f;
@@ -256,11 +262,12 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 				// If the point is closer than any point we have seen thus far, render it.
 				// Otherwise it is hidden behind another object, and we can throw it away
 				// Because it will be invisible anyway.
-                if (pixelDepth >= -1 && pixelDepth <= 1) {
+        if (pixelDepth >= -1 && pixelDepth <= 1) {
 					int pixelDepthConverted = depthFloatToInt(pixelDepth);
-                 	if (pixelDepthConverted < depthBuffer[y * width + x]) {
-					    // If it is, we update the depth buffer to the new depth.
-					    depthBuffer[y * width + x] = pixelDepthConverted;
+         	if (pixelDepthConverted < depthBuffer[y * width + x]) {
+						//TODO qua c e una race condition! Se modificano il depthBuffer ... dovrei avere una mutex su questo blocco per rendere il tutto atomico
+				    // If it is, we update the depth buffer to the new depth.
+						atomicExch(&depthBuffer[y * width + x], pixelDepthConverted);
 
 					    // And finally we determine the colour of the pixel, now that
 					    // we know our pixel is the closest we have seen thus far.
