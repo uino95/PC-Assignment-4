@@ -206,6 +206,12 @@ void runFragmentShader( unsigned char* frameBuffer,
     colour.y = fminf(fmaxf(colour.y, 0.0f), 1.0f);
     colour.z = fminf(fmaxf(colour.z, 0.0f), 1.0f);
 
+		/*
+		atomicExch(&frameBuffer[4 * baseIndex + 0], colour.x * 255.0f);
+		atomicExch(&frameBuffer[4 * baseIndex + 1], colour.y * 255.0f);
+		atomicExch(&frameBuffer[4 * baseIndex + 2], colour.z * 255.0f);
+		atomicExch(&frameBuffer[4 * baseIndex + 3], 255);
+		*/
     frameBuffer[4 * baseIndex + 0] = colour.x * 255.0f;
     frameBuffer[4 * baseIndex + 1] = colour.y * 255.0f;
     frameBuffer[4 * baseIndex + 2] = colour.z * 255.0f;
@@ -256,11 +262,12 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 				// If the point is closer than any point we have seen thus far, render it.
 				// Otherwise it is hidden behind another object, and we can throw it away
 				// Because it will be invisible anyway.
-                if (pixelDepth >= -1 && pixelDepth <= 1) {
+        if (pixelDepth >= -1 && pixelDepth <= 1) {
 					int pixelDepthConverted = depthFloatToInt(pixelDepth);
-                 	if (pixelDepthConverted < depthBuffer[y * width + x]) {
-					    // If it is, we update the depth buffer to the new depth.
-					    depthBuffer[y * width + x] = pixelDepthConverted;
+         	if (pixelDepthConverted < depthBuffer[y * width + x]) {
+						//TODO qua c e una race condition! Se modificano il depthBuffer ... dovrei avere una mutex su questo blocco per rendere il tutto atomico
+				    // If it is, we update the depth buffer to the new depth.
+						atomicExch(&depthBuffer[y * width + x], pixelDepthConverted);
 
 					    // And finally we determine the colour of the pixel, now that
 					    // we know our pixel is the closest we have seen thus far.
@@ -270,28 +277,6 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 			}
 		}
 	}
-}
-
-__global__
-void createTriangles(
-		GPUMesh* meshes,
-		unsigned int meshIndex,
-		workItemGPU *objectToRender,
-		unsigned int width,
-		unsigned int height,
-		unsigned char* frameBuffer,
-		int* depthBuffer) {
-	int triangleIndex = blockDim.y * blockIdx.y + threadIdx.y;
-
-	float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
-	float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
-	float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
-
-	runVertexShader(v0, objectToRender->distanceOffset, objectToRender->scale, width, height);
-	runVertexShader(v1, objectToRender->distanceOffset, objectToRender->scale, width, height);
-	runVertexShader(v2, objectToRender->distanceOffset, objectToRender->scale, width, height);
-
-	rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
 }
 
 __global__
@@ -306,24 +291,25 @@ void renderMeshes(
         int* depthBuffer
 ) {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
-		int meshIndex = blockDim.y * blockIdx.y + threadIdx.y;
-
-		printf("A\n");
     if(index < totalItemsToRender) {
 	    workItemGPU objectToRender = workQueue[index];
-			if(meshIndex < meshCount) {
-					for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
-							float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
-							float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
-							float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
 
-							runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
-							runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
-							runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
+	    for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
+	        for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
 
-							rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
-					}
-			}
+	            float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
+	            float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
+	            float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
+
+	            runVertexShader(v0, objectToRender.distanceOffset, objectToRender.scale, width, height);
+	            runVertexShader(v1, objectToRender.distanceOffset, objectToRender.scale, width, height);
+	            runVertexShader(v2, objectToRender.distanceOffset, objectToRender.scale, width, height);
+
+	            rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
+	        }
+	    }
+		} else {
+			//printf("A\n");
 		}
 }
 
@@ -493,12 +479,8 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     //   numberOfDimensions = totalItemsToRender / devProp.maxGridSize[0];
     // }
 
-		unsigned int numThreadPerBlock = devProp.maxThreadsPerBlock;
-		unsigned int blockDimY = (meshes.size() / devProp.maxThreadsPerBlock + 1),
-				blockDimX = (totalItemsToRender / devProp.maxThreadsPerBlock + 1);
-
-    dim3 numBlocks(blockDimX, blockDimY);
-    dim3 threadPerBlock(numThreadPerBlock, numThreadPerBlock);
+    dim3 numBlocks(totalItemsToRender / devProp.maxThreadsPerBlock + 1);
+    dim3 threadPerBlock(devProp.maxThreadsPerBlock);
 
     //dim3 numBlocks(4, 4);
     //dim3 threadPerBlock(4, 4);
