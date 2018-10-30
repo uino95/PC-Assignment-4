@@ -284,12 +284,10 @@ void renderMeshes(
         int* depthBuffer
 ) {
     int index = blockDim.x * blockIdx.x + threadIdx.x;
-    //printf("index %d \n X: blockDim.x %d blockIdx.x %d threadIdx.x %d \n Y: blockDim.y %d blockIdx.y %d threadIdx.y %d \n Z: blockDim.z %d blockIdx.z %d threadIdx.z %d \n", index, blockDim.x, blockIdx.x, threadIdx.x, blockDim.y, blockIdx.y, threadIdx.y, blockDim.z, blockIdx.z, threadIdx.z);
-		if(index < totalItemsToRender) {
+    if(index < totalItemsToRender) {
 	    workItemGPU objectToRender = workQueue[index];
 
 	    for (unsigned int meshIndex = 0; meshIndex < meshCount; meshIndex++) {
-		//TODO meshIndex: e questo l'errore
 	        for(unsigned int triangleIndex = 0; triangleIndex < meshes[meshIndex].vertexCount / 3; triangleIndex++) {
 
 	            float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
@@ -303,6 +301,8 @@ void renderMeshes(
 	            rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
 	        }
 	    }
+		} else {
+			//printf("A\n");
 		}
 }
 
@@ -472,8 +472,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     //   numberOfDimensions = totalItemsToRender / devProp.maxGridSize[0];
     // }
 
-		printf("A %d\n", devProp.maxThreadsPerBlock);
-    dim3 numBlocks(totalItemsToRender + devProp.maxThreadsPerBlock / devProp.maxThreadsPerBlock);
+    dim3 numBlocks(totalItemsToRender / devProp.maxThreadsPerBlock + 1);
     dim3 threadPerBlock(devProp.maxThreadsPerBlock);
 
     //dim3 numBlocks(4, 4);
