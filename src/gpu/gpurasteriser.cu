@@ -9,6 +9,8 @@
 #include "cuda_runtime.h"
 #include "utilities/cuda_error_helper.hpp"
 
+unsigned int semaphore = 0;
+
 class globalLight {
 public:
 	float3 direction;
@@ -256,42 +258,20 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 				// If the point is closer than any point we have seen thus far, render it.
 				// Otherwise it is hidden behind another object, and we can throw it away
 				// Because it will be invisible anyway.
-                if (pixelDepth >= -1 && pixelDepth <= 1) {
+        if (pixelDepth >= -1 && pixelDepth <= 1) {
 					int pixelDepthConverted = depthFloatToInt(pixelDepth);
-                 	if (pixelDepthConverted < depthBuffer[y * width + x]) {
-					    // If it is, we update the depth buffer to the new depth.
-					    depthBuffer[y * width + x] = pixelDepthConverted;
-
+					bool condition = pixelDepthConverted < depthBuffer[y * width + x];
+					// If it is, we update the depth buffer to the new depth.
+					atomicMin(&depthBuffer[y * width + x], pixelDepthConverted);
+          if (condition) {
 					    // And finally we determine the colour of the pixel, now that
 					    // we know our pixel is the closest we have seen thus far.
-						runFragmentShader(frameBuffer, x + (width * y), mesh, triangleIndex, make_float3(u, v, w));
+							runFragmentShader(frameBuffer, x + (width * y), mesh, triangleIndex, make_float3(u, v, w));
 					}
 				}
 			}
 		}
 	}
-}
-
-__global__
-void createTriangles(
-		GPUMesh* meshes,
-		unsigned int meshIndex,
-		workItemGPU *objectToRender,
-		unsigned int width,
-		unsigned int height,
-		unsigned char* frameBuffer,
-		int* depthBuffer) {
-	int triangleIndex = blockDim.y * blockIdx.y + threadIdx.y;
-
-	float4 v0 = meshes[meshIndex].vertices[triangleIndex * 3 + 0];
-	float4 v1 = meshes[meshIndex].vertices[triangleIndex * 3 + 1];
-	float4 v2 = meshes[meshIndex].vertices[triangleIndex * 3 + 2];
-
-	runVertexShader(v0, objectToRender->distanceOffset, objectToRender->scale, width, height);
-	runVertexShader(v1, objectToRender->distanceOffset, objectToRender->scale, width, height);
-	runVertexShader(v2, objectToRender->distanceOffset, objectToRender->scale, width, height);
-
-	rasteriseTriangle(v0, v1, v2, meshes[meshIndex], triangleIndex, frameBuffer, depthBuffer, width, height);
 }
 
 __global__
@@ -308,7 +288,6 @@ void renderMeshes(
     int index = blockDim.x * blockIdx.x + threadIdx.x;
 		int meshIndex = blockDim.y * blockIdx.y + threadIdx.y;
 
-		printf("A\n");
     if(index < totalItemsToRender) {
 	    workItemGPU objectToRender = workQueue[index];
 			if(meshIndex < meshCount) {
@@ -427,6 +406,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     }
 
 		checkCudaErrors(cudaMemcpy(deviceBuffer, hostBuffer, meshes.size() * sizeof(GPUMesh), cudaMemcpyHostToDevice));
+		checkCudaErrors(cudaMemcpy(deviceBuffer, hostBuffer, meshes.size() * sizeof(GPUMesh), cudaMemcpyHostToDevice));
 
 		// We first need to allocate some buffers.
 		// The depth buffer is used to make sure that objects closer to the camera occlude/obscure objects that are behind it
@@ -487,21 +467,14 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
     checkCudaErrors(cudaMemcpy(deviceWorkQueue, workQueue, totalItemsToRender*sizeof(workItemGPU), cudaMemcpyHostToDevice));
 
-    // int numberOfGrids = devProp.maxGridSize[0] < totalItemsToRender ? devProp.maxGridSize[0] : totalItemsToRender;
-    // int numberOfDimensions = 1;
-    // if(devProp.maxGridSize[0] < totalItemsToRender) {
-    //   numberOfDimensions = totalItemsToRender / devProp.maxGridSize[0];
-    // }
+		unsigned int numberOfBlocksY = std::min(devProp.maxGridSize[1], (int) meshes.size()),
+				numberOfBlocksX = std::min(devProp.maxGridSize[0], (int) totalItemsToRender);
 
-		unsigned int numThreadPerBlock = devProp.maxThreadsPerBlock;
-		unsigned int blockDimY = (meshes.size() / devProp.maxThreadsPerBlock + 1),
-				blockDimX = (totalItemsToRender / devProp.maxThreadsPerBlock + 1);
+		unsigned int threadPerBlockX = (totalItemsToRender / numberOfBlocksX) + 1;
+		unsigned int threadPerBlockY = (meshes.size() / numberOfBlocksY) + 1;
 
-    dim3 numBlocks(blockDimX, blockDimY);
-    dim3 threadPerBlock(numThreadPerBlock, numThreadPerBlock);
-
-    //dim3 numBlocks(4, 4);
-    //dim3 threadPerBlock(4, 4);
+    dim3 numBlocks(numberOfBlocksX, numberOfBlocksY);
+    dim3 threadPerBlock(threadPerBlockX, threadPerBlockY);
 
     renderMeshes<<<numBlocks, threadPerBlock>>>(
       totalItemsToRender, deviceWorkQueue,
