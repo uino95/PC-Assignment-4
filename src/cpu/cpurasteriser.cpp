@@ -229,6 +229,8 @@ std::vector<unsigned char> rasteriseCPU(std::string inputFile, unsigned int widt
 	}
   int numberOfThreads = std::thread::hardware_concurrency();
   std::vector<std::vector<Mesh>> threadTransformedMeshes;
+  
+  //we make a copy of the meshes for each thread
   for (int i = 0; i < numberOfThreads; i++) {
     threadTransformedMeshes.push_back(transformedMeshes);
   }
@@ -257,12 +259,10 @@ std::vector<unsigned char> rasteriseCPU(std::string inputFile, unsigned int widt
     int omp_get_thread_num();
     #pragma omp parallel for schedule(guided)
     for(unsigned int item = 0; item < totalItemsToRender; item++) {
-        // if(item % 10000 == 0) {
-        //     std::cout << item << "/" << totalItemsToRender << " complete." << std::endl;
-        // }
         workItemCPU objectToRender = workQueue.at(item);
         for (unsigned int i = 0; i < meshes.size(); i++) {
-            // The problem here is that threads are working on the same vector of mesh.
+        	// We fix the problem here of the threads that are working on the same vector of mesh
+        	// by using different meshes
             myMutex.lock();
             numberOfThread = omp_get_thread_num();
             Mesh &mesh = meshes.at(i);

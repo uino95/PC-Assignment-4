@@ -207,18 +207,11 @@ void runFragmentShader( unsigned char* frameBuffer,
     colour.x = fminf(fmaxf(colour.x, 0.0f), 1.0f);
     colour.y = fminf(fmaxf(colour.y, 0.0f), 1.0f);
     colour.z = fminf(fmaxf(colour.z, 0.0f), 1.0f);
-
-		/*
-		atomicExch(&frameBuffer[4 * baseIndex + 0], colour.x * 255.0f);
-		atomicExch(&frameBuffer[4 * baseIndex + 1], colour.y * 255.0f);
-		atomicExch(&frameBuffer[4 * baseIndex + 2], colour.z * 255.0f);
-		atomicExch(&frameBuffer[4 * baseIndex + 3], 255);
-		*/
+    
     frameBuffer[4 * baseIndex + 0] = colour.x * 255.0f;
     frameBuffer[4 * baseIndex + 1] = colour.y * 255.0f;
     frameBuffer[4 * baseIndex + 2] = colour.z * 255.0f;
     frameBuffer[4 * baseIndex + 3] = 255;
-
 }
 
 /**
@@ -266,13 +259,22 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 				// Because it will be invisible anyway.
         if (pixelDepth >= -1 && pixelDepth <= 1) {
 					int pixelDepthConverted = depthFloatToInt(pixelDepth);
+					
+					/**
+					* Task 6.
+					* Here we found two race conditions.
+					* 1) Two threads enter the if simultaneously, but one updates it and the other shouldn't update it, as the condition
+					* would not be true this time. We solved this by applying the atomicMin. We could have also solved that by using atomicCAS.
+					* 2) Two threads enter the if simultaneously, then they both update the frameBuffer inside the runFragmentShader.
+					* We should lock the update. We didn't solve this race condition.
+					*/
 					bool condition = pixelDepthConverted < depthBuffer[y * width + x];
 					// If it is, we update the depth buffer to the new depth.
 					atomicMin(&depthBuffer[y * width + x], pixelDepthConverted);
-          if (condition) {
+          			if (condition) {
 					    // And finally we determine the colour of the pixel, now that
 					    // we know our pixel is the closest we have seen thus far.
-							runFragmentShader(frameBuffer, x + (width * y), mesh, triangleIndex, make_float3(u, v, w));
+						runFragmentShader(frameBuffer, x + (width * y), mesh, triangleIndex, make_float3(u, v, w));
 					}
 				}
 			}
@@ -291,9 +293,17 @@ void renderMeshes(
         unsigned char* frameBuffer,
         int* depthBuffer
 ) {
+	/**
+	* We broke the loops regarding items and meshes.
+	* Items threads are on X dimension, mesh threads are on Y dimensions.
+	*/
     int index = blockDim.x * blockIdx.x + threadIdx.x;
-		int meshIndex = blockDim.y * blockIdx.y + threadIdx.y;
+	int meshIndex = blockDim.y * blockIdx.y + threadIdx.y;
 
+	/**
+	* As in general we exceed the number of threads, we check that this doesn't happen
+	* otherwise we overflow the memory. Same happens in if(meshIndex < meshCount) {...}
+	*/
     if(index < totalItemsToRender) {
 	    workItemGPU objectToRender = workQueue[index];
 			if(meshIndex < meshCount) {
@@ -381,7 +391,10 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 		int count=0;
     int deviceID = 0;
     cudaDeviceProp devProp;
-
+	
+	/**
+	* Obtaining information about the device and print them. Task 2
+	*/
     checkCudaErrors(cudaGetDeviceCount(&count));
     std::cout << "Number of devices detected: " << count << std::endl;
     checkCudaErrors(cudaGetDeviceProperties (&devProp, deviceID));
@@ -395,6 +408,10 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
 		checkCudaErrors(cudaMalloc(&deviceBuffer, meshes.size() * sizeof(GPUMesh)));
 
+	/**
+	* Preparing the memory so that we can work on the GPU. This means that we have to copy both
+	* vertices and normals. Task 4d.
+	*/
     for(unsigned int i=0;i<meshes.size(); i++) {
       float4* vertices;
       float3* normals;
@@ -411,20 +428,25 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
       hostBuffer[i].hasNormals = meshes.at(i).hasNormals;
     }
 
-		checkCudaErrors(cudaMemcpy(deviceBuffer, hostBuffer, meshes.size() * sizeof(GPUMesh), cudaMemcpyHostToDevice));
-		checkCudaErrors(cudaMemcpy(deviceBuffer, hostBuffer, meshes.size() * sizeof(GPUMesh), cudaMemcpyHostToDevice));
+	checkCudaErrors(cudaMemcpy(deviceBuffer, hostBuffer, meshes.size() * sizeof(GPUMesh), cudaMemcpyHostToDevice));
 
-		// We first need to allocate some buffers.
-		// The depth buffer is used to make sure that objects closer to the camera occlude/obscure objects that are behind it
+	// We first need to allocate some buffers.
+	// The depth buffer is used to make sure that objects closer to the camera occlude/obscure objects that are behind it
     int* deviceDepthBuffer;
-		// The framebuffer contains the image being rendered.
+	// The framebuffer contains the image being rendered.
     unsigned char* deviceFrameBuffer;
 
     int resolution = width*height;
 
+	/**
+	* Allocating depthBuffer and frameBuffer in GPU. Task 4a.
+	*/
     checkCudaErrors(cudaMalloc(&deviceDepthBuffer, resolution * sizeof(int)));
     checkCudaErrors(cudaMalloc(&deviceFrameBuffer, resolution * 4 * sizeof(unsigned char)));
 
+	/**
+	* Initialization of depth buffer and frame buffer. Task 4b
+	*/
     // take care of integer division down there
     initializeDepthBuffer<<<((resolution + devProp.maxThreadsPerBlock))/devProp.maxThreadsPerBlock, devProp.maxThreadsPerBlock>>>(resolution, deviceDepthBuffer);
     initializeFrameBuffer<<<((resolution * 4 + devProp.maxThreadsPerBlock))/devProp.maxThreadsPerBlock, devProp.maxThreadsPerBlock>>>(resolution*4, deviceFrameBuffer);
@@ -471,29 +493,50 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     unsigned long counter = 0;
     fillWorkQueue(workQueue, largestBoundingBoxSide, depthLimit, &counter);
 
+	/**
+	* Allocating workQueue in GPU. Task 4c.
+	*/
     checkCudaErrors(cudaMemcpy(deviceWorkQueue, workQueue, totalItemsToRender*sizeof(workItemGPU), cudaMemcpyHostToDevice));
 
-		unsigned int numberOfBlocksY = std::min(devProp.maxGridSize[1], (int) meshes.size()),
-				numberOfBlocksX = std::min(devProp.maxGridSize[0], (int) totalItemsToRender);
+	/**
+	* Starts task 5a.
+	* We use two dimensions to correctly break the loop as explained in the doc.
+	* X is used to properly define blocks and thread per block when breaking the loop regaring the items.
+	* Y is used to properly define blocks and thread per block when breaking the loop regaring the meshes.
+	* We group the threads by defining the number of blocks wrt the size. This means that we fix the number of
+	* blocks to the minimum between the maximum achievable for that dimension (returned by devProp.maxGridSize[dimension]), 
+	* and the number of threads that we require.
+	* The number of threads per block will be (totalNumberOfThreadRequired / numberOfBlocks) + 1.
+	*/
+	unsigned int numberOfBlocksY = std::min(devProp.maxGridSize[1], (int) meshes.size()),
+			numberOfBlocksX = std::min(devProp.maxGridSize[0], (int) totalItemsToRender);
 
-		unsigned int threadPerBlockX = (totalItemsToRender / numberOfBlocksX) + 1;
-		unsigned int threadPerBlockY = (meshes.size() / numberOfBlocksY) + 1;
+	unsigned int threadPerBlockX = (totalItemsToRender / numberOfBlocksX) + 1;
+	unsigned int threadPerBlockY = (meshes.size() / numberOfBlocksY) + 1;
 
     dim3 numBlocks(numberOfBlocksX, numberOfBlocksY);
     dim3 threadPerBlock(threadPerBlockX, threadPerBlockY);
-
+	
     renderMeshes<<<numBlocks, threadPerBlock>>>(
       totalItemsToRender, deviceWorkQueue,
 			deviceBuffer, meshes.size(),
 			width, height, deviceFrameBuffer, deviceDepthBuffer
     );
 
-		checkCudaErrors(cudaDeviceSynchronize());
+	checkCudaErrors(cudaDeviceSynchronize());
 
     std::cout << "Finished! device frame buffer size " << std::endl;
 
-		unsigned char* frameBuffer = 	new unsigned char[resolution * 4];
-		checkCudaErrors(cudaMemcpy(frameBuffer, deviceFrameBuffer, resolution * 4 *sizeof(unsigned char), cudaMemcpyDeviceToHost));
+	unsigned char* frameBuffer = 	new unsigned char[resolution * 4];
+	/**
+	* Copying frameBuffer computed in GPU into CPU. Task 5b.
+	*/
+	checkCudaErrors(cudaMemcpy(frameBuffer, deviceFrameBuffer, resolution * 4 *sizeof(unsigned char), cudaMemcpyDeviceToHost));
+	
+	/**
+	* Freeing memory. Task 6.
+	*/
+	//TODO fare free dei CUDA e provare se funziona. In teoria da qui in poi non serve più quindi posso farlo.
 
     // Copy the output picture into a vector so that the image dump code is happy :)
     std::vector<unsigned char> outputFramebuffer(frameBuffer, frameBuffer + (width * height * 4));
