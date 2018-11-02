@@ -403,6 +403,12 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
     std::vector<GPUMesh> meshes = loadWavefrontGPU(inputFile, false);
 
+		/**
+		* Start computing time including overhead related to memory preparation for GPU
+		*/
+		std::cout << "Start preparing memory for GPU" << std::endl;
+		auto startMemory = std::chrono::high_resolution_clock::now();
+
     GPUMesh *hostBuffer = new GPUMesh[meshes.size()];
     GPUMesh *deviceBuffer = new GPUMesh[meshes.size()];
 
@@ -517,6 +523,8 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
     dim3 numBlocks(numberOfBlocksX, numberOfBlocksY);
     dim3 threadPerBlock(threadPerBlockX, threadPerBlockY);
 
+		auto start = std::chrono::high_resolution_clock::now();
+
     renderMeshes<<<numBlocks, threadPerBlock>>>(
       totalItemsToRender, deviceWorkQueue,
 			deviceBuffer, meshes.size(),
@@ -525,7 +533,10 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
 	checkCudaErrors(cudaDeviceSynchronize());
 
-    std::cout << "Finished! device frame buffer size " << std::endl;
+    auto end = std::chrono::high_resolution_clock::now();
+  	auto timeTaken = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+
+    std::cout << "Finished renderization in "<< timeTaken << " nanoseconds " << std::endl;
 
 	unsigned char* frameBuffer = 	new unsigned char[resolution * 4];
 	/**
@@ -540,7 +551,13 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 	checkCudaErrors(cudaFree(deviceDepthBuffer));
 	checkCudaErrors(cudaFree(deviceBuffer));
 	checkCudaErrors(cudaFree(deviceWorkQueue));
-	checkCudaErrors(cudaFree(hostBuffer));
+
+		/**
+		* End computing time including overhead related to memory preparation for GPU
+		*/
+		auto endMemory = std::chrono::high_resolution_clock::now();
+  	auto timeTakenMemoryIncluded = std::chrono::duration_cast<std::chrono::nanoseconds>(endMemory - startMemory).count();
+		std::cout << "Finished also memory related operations in "<< timeTakenMemoryIncluded << " nanoseconds " << std::endl;
 
     // Copy the output picture into a vector so that the image dump code is happy :)
     std::vector<unsigned char> outputFramebuffer(frameBuffer, frameBuffer + (width * height * 4));
