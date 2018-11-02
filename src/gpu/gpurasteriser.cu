@@ -207,7 +207,7 @@ void runFragmentShader( unsigned char* frameBuffer,
     colour.x = fminf(fmaxf(colour.x, 0.0f), 1.0f);
     colour.y = fminf(fmaxf(colour.y, 0.0f), 1.0f);
     colour.z = fminf(fmaxf(colour.z, 0.0f), 1.0f);
-    
+
     frameBuffer[4 * baseIndex + 0] = colour.x * 255.0f;
     frameBuffer[4 * baseIndex + 1] = colour.y * 255.0f;
     frameBuffer[4 * baseIndex + 2] = colour.z * 255.0f;
@@ -259,7 +259,7 @@ void rasteriseTriangle( float4 &v0, float4 &v1, float4 &v2,
 				// Because it will be invisible anyway.
         if (pixelDepth >= -1 && pixelDepth <= 1) {
 					int pixelDepthConverted = depthFloatToInt(pixelDepth);
-					
+
 					/**
 					* Task 6.
 					* Here we found two race conditions.
@@ -391,7 +391,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 		int count=0;
     int deviceID = 0;
     cudaDeviceProp devProp;
-	
+
 	/**
 	* Obtaining information about the device and print them. Task 2
 	*/
@@ -504,7 +504,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 	* X is used to properly define blocks and thread per block when breaking the loop regaring the items.
 	* Y is used to properly define blocks and thread per block when breaking the loop regaring the meshes.
 	* We group the threads by defining the number of blocks wrt the size. This means that we fix the number of
-	* blocks to the minimum between the maximum achievable for that dimension (returned by devProp.maxGridSize[dimension]), 
+	* blocks to the minimum between the maximum achievable for that dimension (returned by devProp.maxGridSize[dimension]),
 	* and the number of threads that we require.
 	* The number of threads per block will be (totalNumberOfThreadRequired / numberOfBlocks) + 1.
 	*/
@@ -516,7 +516,7 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 
     dim3 numBlocks(numberOfBlocksX, numberOfBlocksY);
     dim3 threadPerBlock(threadPerBlockX, threadPerBlockY);
-	
+
     renderMeshes<<<numBlocks, threadPerBlock>>>(
       totalItemsToRender, deviceWorkQueue,
 			deviceBuffer, meshes.size(),
@@ -532,11 +532,15 @@ std::vector<unsigned char> rasteriseGPU(std::string inputFile, unsigned int widt
 	* Copying frameBuffer computed in GPU into CPU. Task 5b.
 	*/
 	checkCudaErrors(cudaMemcpy(frameBuffer, deviceFrameBuffer, resolution * 4 *sizeof(unsigned char), cudaMemcpyDeviceToHost));
-	
+
 	/**
-	* Freeing memory. Task 6.
+	* Freeing memory. Optional task.
 	*/
-	//TODO fare free dei CUDA e provare se funziona. In teoria da qui in poi non serve più quindi posso farlo.
+	checkCudaErrors(cudaFree(deviceFrameBuffer));
+	checkCudaErrors(cudaFree(deviceDepthBuffer));
+	checkCudaErrors(cudaFree(deviceBuffer));
+	checkCudaErrors(cudaFree(deviceWorkQueue));
+	checkCudaErrors(cudaFree(hostBuffer));
 
     // Copy the output picture into a vector so that the image dump code is happy :)
     std::vector<unsigned char> outputFramebuffer(frameBuffer, frameBuffer + (width * height * 4));
